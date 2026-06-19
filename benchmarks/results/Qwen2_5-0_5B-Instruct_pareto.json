@@ -1,0 +1,85 @@
+{
+  "full_ppl": 32.59228700607308,
+  "num_layers": 24,
+  "ref_len": 1024,
+  "calibration": "wikitext",
+  "window": 48,
+  "sink": 4,
+  "points": [
+    {
+      "k": 0,
+      "echo_ppl": 32.59228700607308,
+      "ppl_gap": 0.0,
+      "saving_at_ref": 0.0
+    },
+    {
+      "k": 3,
+      "echo_ppl": 32.7375685729757,
+      "ppl_gap": 0.14528156690261795,
+      "saving_at_ref": 0.11865234375,
+      "anti_ppl": 34.76977149111203,
+      "random_ppl": 33.463442751071995
+    },
+    {
+      "k": 6,
+      "echo_ppl": 34.34534249111108,
+      "ppl_gap": 1.7530554850380042,
+      "saving_at_ref": 0.2373046875,
+      "anti_ppl": 35.82583174766627,
+      "random_ppl": 33.902087838523684
+    },
+    {
+      "k": 9,
+      "echo_ppl": 35.62240738092133,
+      "ppl_gap": 3.030120374848252,
+      "saving_at_ref": 0.35595703125,
+      "anti_ppl": 38.220143788766386,
+      "random_ppl": 37.49822153601549
+    },
+    {
+      "k": 12,
+      "echo_ppl": 36.95314177360832,
+      "ppl_gap": 4.360854767535244,
+      "saving_at_ref": 0.474609375,
+      "anti_ppl": 40.04966383270869,
+      "random_ppl": 36.684437513397526
+    },
+    {
+      "k": 15,
+      "echo_ppl": 37.435877022278355,
+      "ppl_gap": 4.843590016205276,
+      "saving_at_ref": 0.59326171875,
+      "anti_ppl": 42.3547601827964,
+      "random_ppl": 37.67809850991449
+    },
+    {
+      "k": 18,
+      "echo_ppl": 39.349626538294004,
+      "ppl_gap": 6.757339532220925,
+      "saving_at_ref": 0.7119140625,
+      "anti_ppl": 44.56128901656742,
+      "random_ppl": 40.02296057532947
+    },
+    {
+      "k": 21,
+      "echo_ppl": 41.483921352689464,
+      "ppl_gap": 8.891634346616385,
+      "saving_at_ref": 0.83056640625,
+      "anti_ppl": 45.49901468693663,
+      "random_ppl": 44.87282920473816
+    },
+    {
+      "k": 24,
+      "echo_ppl": 45.22468760239743,
+      "ppl_gap": 12.632400596324352,
+      "saving_at_ref": 0.94921875
+    }
+  ],
+  "_meta": {
+    "model": "Qwen/Qwen2.5-0.5B-Instruct",
+    "hardware": "NVIDIA GeForce RTX 3050 Ti Laptop GPU (4.3 GB), torch 2.6.0+cu124",
+    "dtype": "torch.bfloat16",
+    "calibration": "wikitext-2",
+    "window": 48
+  }
+}

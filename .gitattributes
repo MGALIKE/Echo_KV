@@ -1,0 +1,6 @@
+# Normalize line endings to LF in the repo; let Git handle the working-copy form.
+* text=auto eol=lf
+
+# Treat figures as binary (no diff/eol munging).
+*.png binary
+*.pdf binary

@@ -1,0 +1,51 @@
+{
+  "asymptote": 0.4583333333333333,
+  "n_local": 11,
+  "num_layers": 24,
+  "points": [
+    {
+      "context": 256,
+      "final_len": 264,
+      "kv_saving": 0.3680555555555556,
+      "projected": 0.3680555555555556
+    },
+    {
+      "context": 512,
+      "final_len": 520,
+      "kv_saving": 0.4125,
+      "projected": 0.4125
+    },
+    {
+      "context": 1024,
+      "final_len": 1032,
+      "kv_saving": 0.43523901808785526,
+      "projected": 0.4352390180878553
+    },
+    {
+      "context": 2048,
+      "final_len": 2056,
+      "kv_saving": 0.44674124513618674,
+      "projected": 0.4467412451361868
+    }
+  ],
+  "_meta": {
+    "model": "Qwen/Qwen2.5-0.5B-Instruct",
+    "hardware": "NVIDIA GeForce RTX 3050 Ti Laptop GPU (4.3 GB), torch 2.6.0+cu124",
+    "dtype": "torch.bfloat16",
+    "calibration": "wikitext-2",
+    "window": 48
+  },
+  "local_layers": [
+    3,
+    7,
+    8,
+    9,
+    11,
+    13,
+    14,
+    15,
+    16,
+    18,
+    19
+  ]
+}

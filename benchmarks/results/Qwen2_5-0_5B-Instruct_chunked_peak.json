@@ -1,0 +1,40 @@
+{
+  "runs": [
+    {
+      "final_len": 2064,
+      "full_kv_mb": 25.362432,
+      "echo_kv_mb": 14.030848,
+      "kv_saving": 0.4467861757105942,
+      "full_peak_mb": 1644.178432,
+      "echo_peak_mb": 1103.878144,
+      "peak_reduction": 0.32861414399091204,
+      "context": 2048,
+      "prefill_chunk": 256,
+      "_meta": {
+        "model": "Qwen/Qwen2.5-0.5B-Instruct",
+        "hardware": "NVIDIA GeForce RTX 3050 Ti Laptop GPU (4.3 GB), torch 2.6.0+cu124",
+        "dtype": "torch.bfloat16",
+        "calibration": "wikitext-2",
+        "window": 48
+      }
+    },
+    {
+      "final_len": 4112,
+      "full_kv_mb": 50.528256,
+      "echo_kv_mb": 27.662336,
+      "kv_saving": 0.45253728923476,
+      "full_peak_mb": 3466.144768,
+      "echo_peak_mb": 1198.80704,
+      "peak_reduction": 0.6541382082284684,
+      "context": 4096,
+      "prefill_chunk": 256,
+      "_meta": {
+        "model": "Qwen/Qwen2.5-0.5B-Instruct",
+        "hardware": "NVIDIA GeForce RTX 3050 Ti Laptop GPU (4.3 GB), torch 2.6.0+cu124",
+        "dtype": "torch.bfloat16",
+        "calibration": "wikitext-2",
+        "window": 48
+      }
+    }
+  ]
+}

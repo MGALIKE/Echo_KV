@@ -1,0 +1,65 @@
+{
+  "retrievable": 120,
+  "num_layers": 24,
+  "window": 48,
+  "sink": 4,
+  "n_distract": 13,
+  "calibration": "wikitext",
+  "points": [
+    {
+      "k": 1,
+      "echo": 0.9166666666666666,
+      "anti": 0.7083333333333334,
+      "random_mean": 0.8999999999999999,
+      "random_min": 0.5916666666666667,
+      "random_max": 0.9833333333333333
+    },
+    {
+      "k": 2,
+      "echo": 0.95,
+      "anti": 0.6333333333333333,
+      "random_mean": 0.6902777777777778,
+      "random_min": 0.18333333333333332,
+      "random_max": 0.9666666666666667
+    },
+    {
+      "k": 3,
+      "echo": 0.9666666666666667,
+      "anti": 0.5916666666666667,
+      "random_mean": 0.7833333333333333,
+      "random_min": 0.6583333333333333,
+      "random_max": 0.9833333333333333
+    },
+    {
+      "k": 4,
+      "echo": 0.975,
+      "anti": 0.6583333333333333,
+      "random_mean": 0.4069444444444444,
+      "random_min": 0.06666666666666667,
+      "random_max": 0.7166666666666667
+    },
+    {
+      "k": 6,
+      "echo": 0.7583333333333333,
+      "anti": 0.18333333333333332,
+      "random_mean": 0.5041666666666667,
+      "random_min": 0.225,
+      "random_max": 0.725
+    },
+    {
+      "k": 8,
+      "echo": 0.475,
+      "anti": 0.20833333333333334,
+      "random_mean": 0.3708333333333333,
+      "random_min": 0.2,
+      "random_max": 0.95
+    }
+  ],
+  "_meta": {
+    "model": "Qwen/Qwen2.5-0.5B-Instruct",
+    "hardware": "NVIDIA GeForce RTX 3050 Ti Laptop GPU (4.3 GB), torch 2.6.0+cu124",
+    "dtype": "torch.bfloat16",
+    "calibration": "wikitext-2",
+    "window": 48
+  }
+}

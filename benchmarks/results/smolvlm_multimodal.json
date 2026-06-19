@@ -1,0 +1,72 @@
+{
+  "_meta": {
+    "model": "HuggingFaceTB/SmolVLM-256M-Instruct",
+    "hardware": "cuda:0",
+    "num_layers": 30,
+    "image_tokens_per_card": 64,
+    "window": 64,
+    "sink": 4,
+    "filler_tokens": 90,
+    "n_deploy_local": 17
+  },
+  "needles": {
+    "colour": {
+      "n_trials": 4,
+      "chance": 0.25,
+      "full_acc": 1.0,
+      "ceiling_valid": true,
+      "alllocal_recency_acc": 0.25,
+      "alllocal_recency_save": 0.6494845360824743,
+      "anchor_sweep": [
+        {
+          "budget": 2,
+          "uniform_acc": 0.25,
+          "uniform_save": 0.6391752577319587,
+          "score_acc": 0.25,
+          "score_save": 0.6391752577319587
+        },
+        {
+          "budget": 8,
+          "uniform_acc": 1.0,
+          "uniform_save": 0.6082474226804124,
+          "score_acc": 0.5,
+          "score_save": 0.6082474226804124
+        },
+        {
+          "budget": 16,
+          "uniform_acc": 1.0,
+          "uniform_save": 0.5670103092783505,
+          "score_acc": 0.75,
+          "score_save": 0.5670103092783505
+        },
+        {
+          "budget": 32,
+          "uniform_acc": 1.0,
+          "uniform_save": 0.48453608247422686,
+          "score_acc": 1.0,
+          "score_save": 0.48453608247422686
+        },
+        {
+          "budget": 64,
+          "uniform_acc": 1.0,
+          "uniform_save": 0.31958762886597936,
+          "score_acc": 1.0,
+          "score_save": 0.31958762886597936
+        }
+      ],
+      "deploy_recency_acc": 0.75,
+      "deploy_recency_save": 0.3680412371134021
+    },
+    "digit": {
+      "n_trials": 10,
+      "chance": 0.1,
+      "full_acc": 0.2,
+      "ceiling_valid": false,
+      "alllocal_recency_acc": 0.1,
+      "alllocal_recency_save": 0.6421052631578947,
+      "anchor_sweep": [],
+      "deploy_recency_acc": 0.2,
+      "deploy_recency_save": 0.36385964912280694
+    }
+  }
+}
