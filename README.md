@@ -1,16 +1,23 @@
 # echokv
 
-**Training-free KV-cache compression from the attention echo space.**
+> **Training-free KV-cache compression from the attention echo space** — shrink the
+> key–value cache a transformer carries at inference with **no training and a single
+> calibration batch**.
 
-`echokv` shrinks the key–value cache a transformer carries at inference — **no
-training, one calibration batch**. It uses the *attention echo space* (a closure
-structure whose kernel is the attention sink) to classify which layers genuinely
-retrieve from far back and which only look locally. The local ones run on a tiny
-`sink + window` cache that stops growing with context; the rest keep their full
-cache. The classification is the point: it tells you *which* layers are safe to
-shrink, so you do better than cutting the cache uniformly.
+[![CI](https://github.com/MGALIKE/Echo_KV/actions/workflows/ci.yml/badge.svg)](https://github.com/MGALIKE/Echo_KV/actions/workflows/ci.yml)
+[![License: Apache 2.0](https://img.shields.io/badge/license-Apache_2.0-blue.svg)](LICENSE)
+[![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)](pyproject.toml)
+[![Code style: Ruff](https://img.shields.io/badge/code%20style-ruff-261230.svg)](https://github.com/astral-sh/ruff)
+[![Claims: 33/33 verified](https://img.shields.io/badge/claims-33%2F33%20verified-success.svg)](benchmarks/check_claims.py)
 
-This is the engineering form of experiments **X9 / X10 / X11** in the accompanying
+`echokv` uses the *attention echo space* — a closure structure whose kernel is the
+attention sink — to classify which layers genuinely retrieve from far back and which
+only look locally. The local ones run on a tiny `sink + window` cache that stops
+growing with context; the rest keep their full cache. **The classification is the
+point:** it tells you *which* layers are safe to shrink, so you do better than cutting
+the cache uniformly.
+
+It is the engineering form of experiments **X9 / X10 / X11** in the accompanying
 paper, and it independently **rediscovers the hand-designed local/global layer
 schedules** that Gemma, Mistral and gpt-oss ship.
 
@@ -19,13 +26,27 @@ calibrate(model, tok)  ->  EchoSchedule (which layers are local)  ->  echo_gener
                                                                        memory-bounded cache
 ```
 
+**Contents** ·
+[Install](#install) ·
+[Quickstart](#quickstart-library) ·
+[Honest numbers](#what-the-numbers-actually-are-honest) ·
+[Results at a glance](#results-at-a-glance) ·
+[Multimodal](#multimodal-vision-language-models) ·
+[Limits](#honest-limits) ·
+[How it works](#how-it-works-one-paragraph)
+
 ---
 
 ## Install
 
 ```bash
-pip install -e .            # from this directory
-# or, once released:  pip install echokv
+# from source (recommended while pre-PyPI)
+git clone https://github.com/MGALIKE/Echo_KV
+cd Echo_KV
+pip install -e .
+
+# or, once released on PyPI:
+pip install echokv
 ```
 
 Requires `torch>=2.1` and `transformers>=4.45` (developed and tested on
@@ -113,6 +134,23 @@ savings (e.g. +4 near 47 %). Short-text perplexity is a weak proxy — the layer
 signal shows up in the retrieval needle and at long context, not here.
 ‡ Logged in the Colab notebook under `google/gemma-4-E4B-it`; this is most likely a
 Gemma-3n E4B variant — confirm the checkpoint id (the finding is version-independent).
+
+## Results at a glance
+
+| Which layers are local (the classification) | KV-cache saving grows with context |
+|:---:|:---:|
+| ![per-layer triviality](benchmarks/figures/Qwen2_5-0_5B-Instruct_triviality.png) | ![saving vs context](benchmarks/figures/Qwen2_5-0_5B-Instruct_saving_vs_context.png) |
+| Per-layer *triviality* on Qwen2.5-0.5B; red layers run on the bounded `sink+window` cache. | Measured KV saving rising toward the `n_local/L` asymptote (local 4 GB). |
+
+| Quality vs saving (held-out perplexity) | Echo rediscovers Gemma's native schedule |
+|:---:|:---:|
+| ![pareto](benchmarks/figures/gpt2_pareto.png) | ![gemma overlay](benchmarks/figures/gemma_layer_overlay.png) |
+| GPT-2: echo **<** random **<** anti at every saving level. | Echo-chosen local layers vs Gemma's hand-designed sliding-window layers (Colab/L4). |
+
+Every figure is produced by a script in [`benchmarks/`](benchmarks/) from logged JSON,
+and [`benchmarks/check_claims.py`](benchmarks/check_claims.py) re-verifies all 33
+headline numbers against those files. Full table + hardware labels:
+[`benchmarks/BENCHMARKS.md`](benchmarks/BENCHMARKS.md).
 
 ## Multimodal (vision-language models)
 

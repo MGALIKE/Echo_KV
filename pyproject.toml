@@ -29,9 +29,9 @@ benchmarks = ["matplotlib>=3.6"]
 dev = ["pytest>=7.0", "ruff>=0.4", "matplotlib>=3.6"]
 
 [project.urls]
-Homepage = "https://github.com/MGALIKE/echokv"
-Repository = "https://github.com/MGALIKE/echokv"
-Issues = "https://github.com/MGALIKE/echokv/issues"
+Homepage = "https://github.com/MGALIKE/Echo_KV"
+Repository = "https://github.com/MGALIKE/Echo_KV"
+Issues = "https://github.com/MGALIKE/Echo_KV/issues"
 
 [project.scripts]
 echokv = "echokv.cli:main"
