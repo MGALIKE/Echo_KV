@@ -35,7 +35,7 @@ def _cmd_calibrate(args) -> int:
                     window=args.window, sink=args.sink, n_local=args.n_local)
     print(kv_saving_report(sch, seq_len=args.seq_len))
     if args.check_quality:
-        print(evaluate_perplexity(model, tok, sch))
+        print(evaluate_perplexity(model, tok, sch, kv_bits=args.kv_bits))
     return 0
 
 
@@ -51,11 +51,16 @@ def _cmd_generate(args) -> int:
             tokenize=False, add_generation_prompt=True)
     text, stats = echo_generate(model, tok, prompt, sch,
                                 max_new_tokens=args.max_new_tokens,
-                                prefill_chunk=args.prefill_chunk)
+                                prefill_chunk=args.prefill_chunk,
+                                kv_bits=args.kv_bits)
     print(text)
-    print(f"\n[echokv] {sch.n_local}/{sch.num_layers} layers local; "
-          f"KV cache saved {100 * stats['kv_saving']:.0f}% at length "
-          f"{stats['final_len']}")
+    msg = (f"\n[echokv] {sch.n_local}/{sch.num_layers} layers local; "
+           f"KV tokens saved {100 * stats['kv_saving']:.0f}% at length "
+           f"{stats['final_len']}")
+    if args.kv_bits < 16:
+        msg += (f"; with {args.kv_bits}-bit quant -> "
+                f"{100 * stats['kv_saving_with_quant']:.0f}% of fp16 KV bytes saved")
+    print(msg)
     return 0
 
 
@@ -77,6 +82,10 @@ def build_parser() -> argparse.ArgumentParser:
                         help="fix the number of local layers instead of target-saving")
         sp.add_argument("--window", type=int, default=64)
         sp.add_argument("--sink", type=int, default=4)
+        sp.add_argument("--kv-bits", type=int, default=16,
+                        help="quantize the kept KV to this many bits, composing with "
+                             "the layer schedule (8 near-lossless, 4 aggressive; "
+                             "default 16 = off)")
 
     c = sub.add_parser("calibrate", help="profile a model and print its echo schedule")
     add_common(c)

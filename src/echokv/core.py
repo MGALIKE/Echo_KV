@@ -28,6 +28,14 @@ local layers hold a shorter cache that breaks.  We register a small custom
 attention ("echo_eager") that builds its own causal mask, which is exactly correct
 for single-token decode (every cached key is a valid causal target) and lets pruned
 local layers hold a shorter -- and non-contiguous -- cache than the global ones.
+
+Two orthogonal savings.  The schedule compresses along the TOKEN axis (local layers
+keep fewer tokens); ``kv_bits`` compresses along the BIT axis (KIVI-style per-channel
+key / per-token value quantization of the cache).  They compose independently -- on
+Qwen2.5-7B, 4-bit costs a near-constant ~0.05 of needle retention at any localization
+level -- so the savings multiply: ~50% token saving x 4-bit ->  ~87% of the fp16 KV
+bytes.  Quantization here is fake-quant (quality exact; the byte saving it reports is
+what a packed int cache would realise).
 """
 from __future__ import annotations
 
@@ -38,7 +46,7 @@ from typing import List, Optional, Sequence, Tuple
 import numpy as np
 import torch
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 try:
     from transformers import AttentionInterface
@@ -463,6 +471,171 @@ def _cache_handles(past):
     return None, kc, vc, n
 
 
+# --------------------------------------------------------------------------- #
+#  KV-cache quantization (the *bit* axis, orthogonal to the token axis above).
+#
+#  Token-dropping (the echo schedule) and quantization compose independently: on
+#  Qwen2.5-7B, 4-bit costs a near-constant ~0.05 of needle retention regardless of
+#  how many layers are localized, so the two savings multiply (see
+#  SCALE_ADD_REPORT_2026-06-21.md).  We quantize KIVI-style: per-CHANNEL for keys
+#  (they carry channel outliers) and per-TOKEN for values.
+#
+#  This is *fake* quantization (quantize->dequantize): the cached tensors stay in the
+#  model dtype, so the model decodes through exactly the quantization NOISE it would
+#  see, and quality is measured faithfully.  The reported memory saving is therefore
+#  the saving ACHIEVABLE with a packed int cache (kv_bits/16 of the bytes); realising
+#  that byte reduction live needs a packed-storage cache kernel, which is future work.
+#  This mirrors how `evaluate_perplexity` already *simulates* the schedule by masking.
+# --------------------------------------------------------------------------- #
+def _quant_dequant(x, bits, reduce_dims):
+    """Asymmetric min-max quantize->dequantize of `x` to `bits`, with one scale/zero
+    per group, where a group is the set of entries sharing all indices EXCEPT the
+    reduced dims.  `bits>=16` is a no-op."""
+    if bits is None or bits >= 16:
+        return x
+    qmax = float(2 ** bits - 1)
+    xf = x.float()
+    xmin = xf.amin(dim=reduce_dims, keepdim=True)
+    xmax = xf.amax(dim=reduce_dims, keepdim=True)
+    scale = (xmax - xmin).clamp_min(1e-8) / qmax
+    q = ((xf - xmin) / scale).round_().clamp_(0, qmax)
+    return (q * scale + xmin).to(x.dtype)
+
+
+def _quantize_cache_inplace(past, bits):
+    """Fake-quantize every layer's cached keys (per-channel) and values (per-token)
+    in place.  Cache tensors are (B, n_kv, T, head_dim)."""
+    if bits is None or bits >= 16:
+        return
+    layers, kc, vc, n = _cache_handles(past)
+    for li in range(n):
+        if layers is not None:
+            lyr = layers[li]; k, v = lyr.keys, lyr.values
+        else:
+            lyr = None; k, v = kc[li], vc[li]
+        if k is None:
+            continue
+        qk = _quant_dequant(k, bits, (0, 2))        # per (n_kv, head_dim) over tokens
+        qv = _quant_dequant(v, bits, (0, 3))        # per (n_kv, token) over channels
+        if lyr is not None:
+            lyr.keys, lyr.values = qk, qv
+        else:
+            kc[li], vc[li] = qk, qv
+
+
+def _install_kv_quant_hooks(model, bits):
+    """Register forward hooks that fake-quantize k_proj/v_proj outputs (shape
+    (B, T, C)) for the masked-forward simulation in `evaluate_perplexity`.  Returns
+    handles to remove.  Keys per-channel (scale over tokens), values per-token."""
+    if bits is None or bits >= 16:
+        return []
+    handles = []
+
+    def k_hook(mod, inp, out):
+        return _quant_dequant(out, bits, (0, 1))     # per channel C, over B,T
+    def v_hook(mod, inp, out):
+        return _quant_dequant(out, bits, (0, 2))     # per token T, over B,C
+
+    for a in get_attn_modules(model):
+        k = getattr(a, "k_proj", None)
+        v = getattr(a, "v_proj", None)
+        if k is not None and v is not None:
+            handles.append(k.register_forward_hook(k_hook))
+            handles.append(v.register_forward_hook(v_hook))
+            continue
+        cattn = getattr(a, "c_attn", None)           # GPT-2 fused QKV
+        if cattn is not None:
+            def kv_hook(mod, inp, out):
+                d = out.shape[-1] // 3
+                q, k, v = out[..., :d], out[..., d:2 * d], out[..., 2 * d:]
+                k = _quant_dequant(k, bits, (0, 1))
+                v = _quant_dequant(v, bits, (0, 2))
+                return torch.cat([q, k, v], dim=-1)
+            handles.append(cattn.register_forward_hook(kv_hook))
+    return handles
+
+
+def _combined_saving(token_saving: float, kv_bits: int) -> float:
+    """Fraction of the fp16 KV bytes removed by BOTH axes: a `token_saving` fraction of
+    positions dropped, and each kept position stored in `kv_bits`/16 of the bytes."""
+    return 1.0 - (1.0 - token_saving) * (min(max(int(kv_bits), 1), 16) / 16.0)
+
+
+# --------------------------------------------------------------------------- #
+#  value-aware front selection (a capability the recent methods have and the echo
+#  kernel does not -- ADDED ALONGSIDE the topology, not replacing it).  These only
+#  read the cached VALUE vectors, never the attention matrix, so they are
+#  FlashAttention/SDPA-compatible (no `output_attentions`) -- the KeyDiff-style
+#  deployability the eager kernel calibration lacks.  The echo schedule still decides
+#  WHICH layers are local and always keeps the kernel sink; this only chooses the
+#  EXTRA long-range front keys, on the local layers, beyond the sink.
+#
+#    front_policy="positional"     keep [sink : sink+budget)      (original behaviour)
+#    front_policy="value_norm"     keep the largest-||v|| keys    (VATP-style)
+#    front_policy="value_subspace" keep keys SPANNING the value subspace
+#                                  (greedy pivoted Gram-Schmidt = CurDKV-style CSS)
+# --------------------------------------------------------------------------- #
+def _values_of(past, li):
+    layers = getattr(past, "layers", None)
+    if layers is not None:
+        return layers[li].values
+    vc = getattr(past, "value_cache", None)
+    return vc[li] if vc is not None else None
+
+
+def _value_matrix(past, li):
+    """(T, d) value matrix for layer li with kv-heads concatenated, or None."""
+    v = _values_of(past, li)
+    if v is None:
+        return None
+    v = v[0] if v.dim() == 4 else v                # (nkv, T, hd)
+    T = v.shape[1]
+    return v.permute(1, 0, 2).reshape(T, -1).float()
+
+
+def _value_front(vmat, cand, budget, policy):
+    """Return up to `budget` positions from `cand` chosen from value geometry."""
+    if budget <= 0 or not cand:
+        return []
+    idx = torch.tensor(cand, device=vmat.device)
+    V = vmat.index_select(0, idx)                  # (m, d)
+    if policy == "value_norm":
+        k = min(budget, len(cand))
+        top = torch.topk(V.norm(dim=1), k).indices.tolist()
+        return sorted(int(cand[i]) for i in top)
+    # value_subspace: greedy pivoted Gram-Schmidt -- pick the largest-residual-norm
+    # value vector, deflate every remaining vector against it, repeat.  Spans the
+    # dominant value directions instead of keeping redundant high-norm duplicates.
+    R = V.clone()
+    chosen = []
+    for _ in range(min(budget, len(cand))):
+        n2 = (R * R).sum(1)
+        for c in chosen:
+            n2[c] = -1.0
+        i = int(torch.argmax(n2))
+        if float(n2[i]) <= 1e-12:
+            break
+        chosen.append(i)
+        u = R[i] / R[i].norm().clamp_min(1e-9)
+        R = R - torch.outer(R @ u, u)
+    return sorted(int(cand[i]) for i in chosen)
+
+
+def _value_fronts(past, schedule, policy, budget, seq_len):
+    """Per-local-layer extra front positions chosen by a value-aware policy."""
+    lo = schedule.sink
+    hi = max(lo, seq_len - schedule.window)
+    cand = list(range(lo, hi))
+    out = {}
+    if not cand or budget <= 0:
+        return out
+    for li in schedule.local_layers:
+        vmat = _value_matrix(past, li)
+        if vmat is not None and vmat.shape[0] >= seq_len:
+            out[li] = _value_front(vmat, cand, budget, policy)
+    return out
+
+
 class _Pruner:
     """Bounds the KV cache of local layers to a frozen *front* block (kernel sink +
     protected anchors) plus a sliding *recent window*.
@@ -474,11 +647,13 @@ class _Pruner:
     original prompt; the cached keys carry their original RoPE phase, so gathering a
     non-contiguous subset is positionally correct."""
 
-    def __init__(self, local_layers, sink, window, anchors=None):
+    def __init__(self, local_layers, sink, window, anchors=None, front_extra=None):
         self.local = list(local_layers)
         self.sink = sink
         self.window = window
         self.anchors = sorted(set(int(a) for a in (anchors or [])))
+        # per-layer extra front positions from a value-aware policy (optional)
+        self.front_extra = {int(l): list(p) for l, p in (front_extra or {}).items()}
         self.front = {}                 # layer -> number of frozen front rows
 
     def step(self, past):
@@ -499,7 +674,9 @@ class _Pruner:
                 # is permutation-invariant over keys and RoPE phase is baked into the
                 # cached keys, so reordering rows is exact.
                 front = sorted(set(range(min(self.sink, L)))
-                               | set(a for a in self.anchors if 0 <= a < L))
+                               | set(a for a in self.anchors if 0 <= a < L)
+                               | set(a for a in self.front_extra.get(li, [])
+                                     if 0 <= a < L))
                 fset = set(front)
                 tail = [p for p in range(max(0, L - self.window), L) if p not in fset]
                 self.front[li] = len(front)
@@ -550,7 +727,9 @@ def echo_generate(model, tokenizer, prompt, schedule: EchoSchedule,
                   stop_on_eos: bool = True, prefill_chunk: Optional[int] = None,
                   inputs: Optional[dict] = None, image_token_id: Optional[int] = None,
                   image_budget: int = 64, protect_spans=None, keep: str = "anchor",
-                  force_decode: Optional[Sequence[int]] = None, anchor_scores=None):
+                  force_decode: Optional[Sequence[int]] = None, anchor_scores=None,
+                  front_policy: str = "positional", front_budget: int = 0,
+                  kv_bits: int = 16):
     """Greedy/sampled generation with the echo memory-bounded cache.  Local layers
     are pruned to a fixed budget after prefill and kept that small every step, so
     their KV cache does not grow with context.  Returns (text, stats).
@@ -563,7 +742,22 @@ def echo_generate(model, tokenizer, prompt, schedule: EchoSchedule,
 
     `prefill_chunk`:  text-only peak control -- encode the prompt in chunks, pruning
     after each (attention scratch O(chunk*T) not O(T^2)).  Disabled automatically
-    when image anchors are protected (anchors need the whole prompt at once)."""
+    when image anchors are protected (anchors need the whole prompt at once).
+
+    `front_policy`:  how the local layers fill their front block beyond the kernel
+    sink (the echo schedule itself is untouched).  ``"positional"`` (default) keeps
+    the original ``[:sink]+[-window:]`` behaviour.  ``"value_norm"`` and
+    ``"value_subspace"`` instead spend a ``front_budget`` of extra front keys on
+    value-aware selections (VATP- / CurDKV-style), read from the cached values only
+    (no attention materialised).  Disabled with chunked prefill (needs the whole
+    prompt's values at once).
+
+    `kv_bits`:  quantize the cached KV to this many bits (KIVI-style per-channel keys /
+    per-token values) -- the *bit* axis, orthogonal to the schedule's *token* axis, so
+    the two savings multiply.  Default 16 = off; 8 is near-lossless, 4 is the validated
+    aggressive setting.  This is fake-quant (quality is exact; the reported
+    `kv_saving_with_quant` is the saving achievable with a packed int cache).  `stats`
+    reports `kv_bits` and `kv_saving_with_quant`."""
     dev = _device(model)
     # ---- assemble prefill inputs ----
     if inputs is not None:
@@ -590,12 +784,14 @@ def echo_generate(model, tokenizer, prompt, schedule: EchoSchedule,
             n_img = sum(e - s for s, e in spans)
             anchors = _pooled_anchor_positions(spans, image_budget, scores=anchor_scores)
     pruner = _Pruner(schedule.local_layers, schedule.sink, schedule.window, anchors)
+    value_front = (front_policy in ("value_norm", "value_subspace")
+                   and front_budget > 0)
 
     prev_impl = install_echo_attention(model)
     try:
         T0 = ids.shape[1]
         use_chunk = bool(prefill_chunk) and T0 > prefill_chunk and not anchors \
-            and inputs is None
+            and inputs is None and not value_front
         if use_chunk:
             past = None
             for s in range(0, T0, prefill_chunk):
@@ -610,7 +806,11 @@ def echo_generate(model, tokenizer, prompt, schedule: EchoSchedule,
             out = _forward_last(model, **prefill_kw, use_cache=True)
             past = out.past_key_values
             logits = out.logits[:, -1]
+            if value_front:
+                pruner.front_extra = _value_fronts(past, schedule, front_policy,
+                                                   front_budget, T0)
             pruner.step(past)
+        _quantize_cache_inplace(past, kv_bits)
         produced, true_len = [], T0
         eos = tokenizer.eos_token_id
         # teacher-forced decode prefix: feed these tokens through the *pruned* cache
@@ -625,6 +825,7 @@ def echo_generate(model, tokenizer, prompt, schedule: EchoSchedule,
                 logits = out.logits[:, -1]
                 true_len += 1
                 pruner.step(past)
+                _quantize_cache_inplace(past, kv_bits)
         for _ in range(max_new_tokens):
             if greedy:
                 nxt = logits.argmax(-1, keepdim=True)
@@ -642,6 +843,7 @@ def echo_generate(model, tokenizer, prompt, schedule: EchoSchedule,
             logits = out.logits[:, -1]
             true_len += 1
             pruner.step(past)
+            _quantize_cache_inplace(past, kv_bits)
         text = tokenizer.decode(produced, skip_special_tokens=True)
         # cache accounting (actual cache sizes, so anchors are counted)
         echo_keys = _cache_key_count(past, schedule.num_layers)
@@ -649,8 +851,13 @@ def echo_generate(model, tokenizer, prompt, schedule: EchoSchedule,
         stats = {"final_len": true_len, "new_tokens": len(produced),
                  "n_anchor": len(anchors), "n_image": n_img, "keep": keep,
                  "anchor_select": "score" if anchor_scores is not None else "uniform",
+                 "front_policy": front_policy if value_front else "positional",
+                 "front_budget": front_budget if value_front else 0,
                  "full_cache_keys": full_keys, "echo_cache_keys": echo_keys,
-                 "kv_saving": 1.0 - echo_keys / max(full_keys, 1)}
+                 "kv_saving": 1.0 - echo_keys / max(full_keys, 1),
+                 "kv_bits": kv_bits,
+                 "kv_saving_with_quant": _combined_saving(
+                     1.0 - echo_keys / max(full_keys, 1), kv_bits)}
         return text, stats
     finally:
         restore_attention(model, prev_impl)
@@ -668,12 +875,15 @@ def _kv_bytes_per_pos(model):
 def measure_memory(model, tokenizer, prompt, schedule: EchoSchedule,
                    max_new_tokens: int = 256, prefill_chunk: Optional[int] = None,
                    inputs: Optional[dict] = None, image_token_id: Optional[int] = None,
-                   image_budget: int = 64, keep: str = "anchor"):
+                   image_budget: int = 64, keep: str = "anchor", kv_bits: int = 16):
     """Generate (naive full vs echo) and report KV-cache size and peak CUDA memory.
 
-    The `full` baseline is naive inference (full cache, single-shot prefill).  The
+    The `full` baseline is naive fp16 inference (full cache, single-shot prefill).  The
     `echo` run uses the memory-bounded cache and, if `prefill_chunk` is set (text
-    only), chunked prefill."""
+    only), chunked prefill.  `kv_bits` (<16) folds the *achievable* quantized-cache
+    byte saving into `echo_kv_mb`/`kv_saving` (token axis x bit axis); note the live
+    CUDA peak does not yet shrink from quant (fake-quant -- packed storage is future
+    work), so `peak_reduction` reflects token-dropping only."""
     empty = EchoSchedule([], schedule.num_layers, schedule.window, schedule.sink)
     bpp = _kv_bytes_per_pos(model)              # bytes per cached position (per layer)
     cuda = torch.cuda.is_available()
@@ -687,11 +897,12 @@ def measure_memory(model, tokenizer, prompt, schedule: EchoSchedule,
     _t, s_echo = echo_generate(model, tokenizer, prompt, schedule, max_new_tokens,
                                prefill_chunk=prefill_chunk, inputs=inputs,
                                image_token_id=image_token_id,
-                               image_budget=image_budget, keep=keep)
+                               image_budget=image_budget, keep=keep, kv_bits=kv_bits)
     echo_peak = torch.cuda.max_memory_allocated() if cuda else 0
+    bit_factor = min(kv_bits, 16) / 16.0
     full_kv_mb = s_full["echo_cache_keys"] * bpp / 1e6
-    echo_kv_mb = s_echo["echo_cache_keys"] * bpp / 1e6
-    out = {"final_len": s_echo["final_len"],
+    echo_kv_mb = s_echo["echo_cache_keys"] * bpp * bit_factor / 1e6
+    out = {"final_len": s_echo["final_len"], "kv_bits": kv_bits,
            "full_kv_mb": full_kv_mb, "echo_kv_mb": echo_kv_mb,
            "kv_saving": 1 - echo_kv_mb / max(full_kv_mb, 1e-9)}
     if cuda:
@@ -712,10 +923,13 @@ def kv_saving_report(schedule: EchoSchedule, seq_len: int, anchors: int = 0) -> 
 # --------------------------------------------------------------------------- #
 @torch.no_grad()
 def evaluate_perplexity(model, tokenizer, schedule: EchoSchedule,
-                        texts: Optional[List[str]] = None, seq_len: int = 256):
-    """Perplexity of the full model vs the echo schedule (simulated by masking the
-    local layers to sink+window), on held-out text.  A fast quality sanity check
-    that needs no generation."""
+                        texts: Optional[List[str]] = None, seq_len: int = 256,
+                        kv_bits: int = 16):
+    """Perplexity of the full fp16 model vs the echo schedule (simulated by masking the
+    local layers to sink+window), on held-out text.  A fast quality sanity check that
+    needs no generation.  `kv_bits` (<16) also fake-quantizes the KV on the echo run
+    (per-channel keys / per-token values), so the gap reflects token-dropping AND
+    quantization together -- the deployed config vs the fp16 baseline."""
     texts = texts or DEFAULT_CALIB
     dev = _device(model)
     ids_all = []
@@ -748,7 +962,7 @@ def evaluate_perplexity(model, tokenizer, schedule: EchoSchedule,
 
     prev = _set_attn_impl(model, "eager")
 
-    def ppl(local_layers):
+    def ppl(local_layers, bits=16):
         def mk():
             def pre(mod, args, kwargs):
                 kwargs["attention_mask"] = add
@@ -756,6 +970,7 @@ def evaluate_perplexity(model, tokenizer, schedule: EchoSchedule,
             return pre
         handles = [attn_mods[l].register_forward_pre_hook(mk(), with_kwargs=True)
                    for l in local_layers]
+        handles += _install_kv_quant_hooks(model, bits)
         try:
             tot, cnt = 0.0, 0
             for b in range(0, tokens.shape[0], 2):
@@ -770,8 +985,9 @@ def evaluate_perplexity(model, tokenizer, schedule: EchoSchedule,
         finally:
             for h in handles:
                 h.remove()
-    full = ppl([])
-    echo = ppl(schedule.local_layers)
+    full = ppl([], 16)
+    echo = ppl(schedule.local_layers, kv_bits)
     _set_attn_impl(model, prev)
     return {"full_ppl": full, "echo_ppl": echo, "ppl_gap": echo - full,
-            "kv_saving_at_len": schedule.saving(T)}
+            "kv_bits": kv_bits,
+            "kv_saving_at_len": _combined_saving(schedule.saving(T), kv_bits)}

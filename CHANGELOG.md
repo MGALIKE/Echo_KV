@@ -4,6 +4,36 @@ All notable changes to `echokv` are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [0.3.0] — 2026-06-21
+
+Adds two training-free knobs on top of the layer schedule: **quantization** (the bit
+axis) and **value-aware front selection**.
+
+### Added
+- **`kv_bits`** on `echo_generate()`, `measure_memory()`, and `evaluate_perplexity()`
+  (and `echokv ... --kv-bits` on the CLI): quantize the kept KV cache KIVI-style
+  (per-channel keys / per-token values) to 8 or 4 bits. Orthogonal to the layer
+  schedule, so the savings multiply — e.g. ~50% token saving × 4-bit ≈ **87% of the
+  fp16 KV bytes**. Validated on Qwen2.5-0.5B/3B/7B (n=100 needle survival): 4-bit costs
+  a near-constant ~0.05 of retention at any localization level, and echo's layer choice
+  still beats a random choice by ~0.19 at matched memory. `stats` now reports `kv_bits`
+  and `kv_saving_with_quant`.
+- **`front_policy` / `front_budget`** on `echo_generate()`: choose *which* long-range
+  keys a local layer keeps in its frozen front block (beyond the kernel sink) —
+  `"positional"` (default, StreamingLLM-style), `"value_norm"` (largest ‖v‖, VATP-style),
+  or `"value_subspace"` (greedy pivoted Gram–Schmidt spanning the value subspace,
+  CurDKV-style). Reads cached values only (FlashAttention/SDPA-compatible — no attention
+  matrix materialised).
+
+### Notes / honesty
+- Quantization is **fake-quant** (quantize→dequantize): quality is measured exactly (the
+  model decodes through real quantization noise), and the reported byte saving is what a
+  **packed int cache would realise**. Realising that byte reduction *live* (lower CUDA
+  peak from quant) needs a packed-storage cache kernel — future work.
+- Value-aware fronts are a *classifier-ties-frontier* feature: `value_subspace` matches
+  CurDKV-style selection (it does not claim to beat it). Use it to spend a small extra
+  front budget on the keys the model actually reads, not as a frontier-beating ranker.
+
 ## [0.2.0] — 2026-06-19
 
 First public release.

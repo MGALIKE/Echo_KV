@@ -84,3 +84,28 @@ def test_local_cache_stops_growing():
     pr = _Pruner(local_layers=[0], sink=sink, window=window)
     pr.step(cache)
     assert cache.key_cache[0].shape[2] == sink + window
+
+
+def test_value_aware_front_extra_frozen():
+    """Value-aware front positions are frozen like anchors (the new capability)."""
+    L, sink, window = 100, 4, 10
+    cache = _fake_cache(1, L)
+    pr = _Pruner(local_layers=[0], sink=sink, window=window, front_extra={0: [40, 41]})
+    pr.step(cache)
+    kept = set(_positions(cache, 0))
+    assert {40, 41} <= kept                       # value-selected keys survive
+    assert {0, 1, 2, 3} <= kept                   # sink (topology) still kept
+    assert pr.front[0] == len({0, 1, 2, 3, 40, 41})
+
+
+def test_value_subspace_avoids_redundant_direction():
+    """value_subspace must span: prefer an orthogonal key over a near-duplicate of an
+    already-kept high-norm key; value_norm just takes the two largest norms."""
+    from echokv.core import _value_front
+    vmat = torch.zeros(40, 4)
+    vmat[10] = torch.tensor([10.0, 0, 0, 0])
+    vmat[20] = torch.tensor([9.9, 0, 0, 0])       # near-duplicate of pos 10's direction
+    vmat[30] = torch.tensor([0.0, 5, 0, 0])       # orthogonal, smaller norm
+    cand = [10, 20, 30]
+    assert _value_front(vmat, cand, 2, "value_norm") == [10, 20]
+    assert _value_front(vmat, cand, 2, "value_subspace") == [10, 30]

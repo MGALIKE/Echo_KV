@@ -29,6 +29,7 @@ calibrate(model, tok)  ->  EchoSchedule (which layers are local)  ->  echo_gener
 **Contents** ·
 [Install](#install) ·
 [Quickstart](#quickstart-library) ·
+[Compose](#compose-with-quantization-and-value-aware-fronts) ·
 [Honest numbers](#what-the-numbers-actually-are-honest) ·
 [Results at a glance](#results-at-a-glance) ·
 [Multimodal](#multimodal-vision-language-models) ·
@@ -85,7 +86,40 @@ print(text, f"\nKV saved {100*stats['kv_saving']:.0f}% at length {stats['final_l
 ```bash
 echokv calibrate Qwen/Qwen2.5-0.5B-Instruct --target-saving 0.4 --seq-len 4096 --check-quality
 echokv generate  Qwen/Qwen2.5-0.5B-Instruct --chat --prompt "Explain attention sinks." --max-new-tokens 128
+echokv generate  Qwen/Qwen2.5-0.5B-Instruct --chat --prompt "Explain attention sinks." --kv-bits 4   # + 4-bit quant
 echokv benchmark --out runs/ --quick        # bundled reproduction figures
+```
+
+## Compose with quantization and value-aware fronts
+
+Two training-free knobs stack on top of the layer schedule.
+
+**Quantization (the *bit* axis).** `kv_bits` quantizes the kept cache KIVI-style
+(per-channel keys / per-token values). It is orthogonal to the schedule's *token* axis,
+so the savings multiply — `~50% tokens × 4-bit ≈ 87%` of the fp16 KV bytes, at a small,
+near-constant quality cost (validated on Qwen2.5-0.5B/3B/7B, n=100 needle survival:
+4-bit costs a near-constant ~0.05 of retention at any localization level).
+
+```python
+text, stats = echokv.echo_generate(model, tok, prompt, schedule,
+                                   max_new_tokens=128, kv_bits=4)   # 8 ~lossless, 4 aggressive
+print(f"{100*stats['kv_saving']:.0f}% tokens dropped, "
+      f"{100*stats['kv_saving_with_quant']:.0f}% of fp16 KV bytes saved")
+```
+
+> `kv_bits` is fake-quant: quality is measured exactly, and the reported byte saving is
+> what a packed int cache realises (a live VRAM drop from quant is future work).
+
+**Value-aware fronts.** Beyond *which* layers are local, `front_policy` chooses *which*
+long-range keys a local layer keeps in its frozen front block (beyond the kernel sink),
+reading the cached values only (FlashAttention/SDPA-compatible — no attention matrix):
+`"positional"` (default, StreamingLLM-style), `"value_norm"` (largest ‖v‖, VATP-style),
+or `"value_subspace"` (greedy pivoted Gram–Schmidt spanning the value subspace,
+CurDKV-style). Spend a `front_budget` of extra keys on the local layers:
+
+```python
+text, stats = echokv.echo_generate(model, tok, prompt, schedule, max_new_tokens=128,
+                                   front_policy="value_subspace", front_budget=32)
 ```
 
 ## One-command reproduction
